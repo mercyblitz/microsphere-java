@@ -38,6 +38,8 @@ import java.util.Objects;
 import java.util.function.Predicate;
 
 import static io.microsphere.collection.CollectionUtils.isEmpty;
+import static io.microsphere.collection.ListUtils.first;
+import static io.microsphere.collection.ListUtils.newLinkedList;
 import static io.microsphere.collection.Lists.ofList;
 import static io.microsphere.collection.MapUtils.immutableEntry;
 import static io.microsphere.collection.MapUtils.toFixedMap;
@@ -533,7 +535,7 @@ public abstract class AnnotationUtils implements Utils {
      */
     public static boolean isMetaAnnotation(Class<? extends Annotation> annotationType,
                                            Class<? extends Annotation> metaAnnotationType) {
-        if (annotationType == null || metaAnnotationType == null || NATIVE_ANNOTATION_TYPES.contains(annotationType)) {
+        if (annotationType == null || metaAnnotationType == null || isNativeAnnotationType(annotationType)) {
             return false;
         }
 
@@ -739,12 +741,20 @@ public abstract class AnnotationUtils implements Utils {
     }
 
     /**
-     * Find all directly declared annotations of the annotated element with filters, not including
-     * meta annotations.
+     * Retrieves all declared annotations from the specified {@link AnnotatedElement}, including those
+     * from its hierarchy, but excluding meta-annotations, applying the given filters.
+     *
+     * <h3>Example Usage</h3>
+     * <pre>{@code
+     *   List<Annotation> all = AnnotationUtils.findAllDeclaredAnnotations(
+     *       MyClass.class, annotation -> true);
+     *   System.out.println(all); // all declared annotations on MyClass and its superclasses
+     * }</pre>
      *
      * @param annotatedElement    the annotated element
      * @param annotationsToFilter the annotations to filter
      * @return non-null read-only {@link List}
+     * @since 1.0.0
      */
     /**
      * Retrieves all declared annotations from the specified {@link AnnotatedElement}, including those from its hierarchy,
@@ -1220,10 +1230,20 @@ public abstract class AnnotationUtils implements Utils {
 
     /**
      * Find the attributes map from the specified annotation by the {@link Method attribute method}
+     * filters.
+     *
+     * <h3>Example Usage</h3>
+     * <pre>{@code
+     *   Annotation annotation = ExampleClass.class.getAnnotation(CustomAnnotation.class);
+     *   Map<String, Object> attrs = AnnotationUtils.findAttributesMap(
+     *       annotation, method -> !"toString".equals(method.getName()));
+     *   System.out.println(attrs); // {value=example, count=5}
+     * }</pre>
      *
      * @param annotation         the specified annotation
      * @param attributesToFilter the attribute methods to filter
      * @return non-null read-only {@link Map}
+     * @since 1.0.0
      */
     @Nonnull
     @Immutable
@@ -1654,6 +1674,181 @@ public abstract class AnnotationUtils implements Utils {
      */
     public static boolean isCallerSensitivePresent() {
         return nonNull(CALLER_SENSITIVE_ANNOTATION_CLASS);
+    }
+
+    /**
+     * Checks whether the specified annotation type is a native annotation type.
+     * <p>
+     * Native annotation types are those defined by the Java platform itself, such as
+     * {@link Target}, {@link Retention}, {@link Documented}, {@link Inherited},
+     * {@link Native}, and {@link Repeatable}. These annotations are typically used
+     * to define other annotations rather than being applied directly to business logic.
+     * </p>
+     *
+     * <h3>Example Usage</h3>
+     * <pre>{@code
+     * // Check standard Java meta-annotations
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(Target.class));      // true
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(Retention.class));   // true
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(Documented.class));  // true
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(Inherited.class));   // true
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(Native.class));      // true
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(Repeatable.class));  // true
+     *
+     * // Check custom user-defined annotations
+     * @Target(ElementType.TYPE)
+     * @Retention(RetentionPolicy.RUNTIME)
+     * public @interface MyCustomAnnotation {}
+     *
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(MyCustomAnnotation.class)); // false
+     *
+     * // Handle null input safely
+     * System.out.println(AnnotationUtils.isNativeAnnotationType(null)); // false
+     * }</pre>
+     *
+     * @param annotationType the annotation type to check
+     * @return {@code true} if the annotation type is a native annotation type; otherwise, {@code false}
+     * @see #NATIVE_ANNOTATION_TYPES
+     */
+    public static boolean isNativeAnnotationType(Class<? extends Annotation> annotationType) {
+        return NATIVE_ANNOTATION_TYPES.contains(annotationType);
+    }
+
+    /**
+     * Finds the meta-annotation of the specified type that is directly or indirectly
+     * present on the given {@link AnnotatedElement}.
+     *
+     * <p>This method searches for a meta-annotation of the specified type, considering both
+     * direct annotations and meta-annotations (annotations on annotations). It traverses the
+     * annotation hierarchy to find the first matching meta-annotation.</p>
+     *
+     * <h3>Example Usage</h3>
+     * <pre>{@code
+     * @Target(TYPE)
+     * @Retention(RUNTIME)
+     * @Inherited
+     * @Documented
+     * public @interface ServiceMode {
+     * }
+     *
+     * @Inherited
+     * @Target(TYPE)
+     * @Retention(RUNTIME)
+     * @ServiceMode
+     * @interface Monitored {
+     * }
+     *
+     * @Inherited
+     * @Target(TYPE)
+     * @Retention(RUNTIME)
+     * @Monitored
+     * @interface DataAccess {
+     * }
+     *
+     * @DataAccess
+     * class A {
+     * }
+     *
+     * // Find the ServiceMode meta-annotation on class A
+     * ServiceMode serviceMode = AnnotationUtils.findMetaAnnotation(A.class, ServiceMode.class);
+     * System.out.println(serviceMode); // Outputs: @ServiceMode
+     *
+     * // Find the Monitored meta-annotation on class A
+     * Monitored monitored = AnnotationUtils.findMetaAnnotation(A.class, Monitored.class);
+     * System.out.println(monitored); // Outputs: @Monitored
+     * }</pre>
+     *
+     * <p>If either the annotated element or the meta-annotation type is {@code null},
+     * this method will return {@code null}.</p>
+     *
+     * @param annotatedElement   the element to search for meta-annotations on
+     * @param metaAnnotationType the type of meta-annotation to look for
+     * @param <A>                the type of the meta-annotation to find
+     * @return the first matching meta-annotation of the specified type, or {@code null} if none is found
+     */
+    @Nullable
+    public static <A extends Annotation> A findMetaAnnotation(AnnotatedElement annotatedElement, Class<A> metaAnnotationType) {
+        return first(findMetaAnnotations(annotatedElement, metaAnnotationType));
+    }
+
+    /**
+     * Finds all meta-annotations of the specified type that are directly or indirectly
+     * present on the given {@link AnnotatedElement}.
+     *
+     * <p>This method searches for meta-annotations of the specified type, considering both
+     * direct annotations and meta-annotations (annotations on annotations). It traverses the
+     * annotation hierarchy to find all matching meta-annotations.</p>
+     *
+     * <h3>Example Usage</h3>
+     * <pre>{@code
+     * @Target(TYPE)
+     * @Retention(RUNTIME)
+     * @Inherited
+     * @Documented
+     * public @interface ServiceMode {
+     * }
+     *
+     * @Inherited
+     * @Target(TYPE)
+     * @Retention(RUNTIME)
+     * @ServiceMode
+     * @interface Monitored {
+     * }
+     *
+     * @Inherited
+     * @Target(TYPE)
+     * @Retention(RUNTIME)
+     * @Monitored
+     * @interface DataAccess {
+     * }
+     *
+     * @DataAccess
+     * class A {
+     * }
+     *
+     * // Find all ServiceMode meta-annotations on class A
+     * List<ServiceMode> serviceModes = AnnotationUtils.findMetaAnnotations(A.class, ServiceMode.class);
+     * System.out.println(serviceModes); // Outputs: [@ServiceMode]
+     *
+     * // Find all Monitored meta-annotations on class A
+     * List<Monitored> monitoredList = AnnotationUtils.findMetaAnnotations(A.class, Monitored.class);
+     * System.out.println(monitoredList); // Outputs: [@Monitored]
+     *
+     * // When no meta-annotation is found
+     * List<ServiceMode> emptyList = AnnotationUtils.findMetaAnnotations(String.class, ServiceMode.class);
+     * System.out.println(emptyList); // Outputs: []
+     * }</pre>
+     *
+     * <p>If either the annotated element or the meta-annotation type is {@code null},
+     * this method will return an empty list.</p>
+     *
+     * @param annotatedElement   the element to search for meta-annotations on
+     * @param metaAnnotationType the type of meta-annotation to look for
+     * @param <A>                the type of the meta-annotation to find
+     * @return a read-only list of all matching meta-annotations of the specified type, never {@code null}
+     */
+    @Nonnull
+    @Immutable
+    public static <A extends Annotation> List<A> findMetaAnnotations(AnnotatedElement annotatedElement, Class<A> metaAnnotationType) {
+        List<A> annotations = newLinkedList();
+        findMetaAnnotations(annotatedElement, metaAnnotationType, annotations);
+        return unmodifiableList(annotations);
+    }
+
+    static <A extends Annotation> void findMetaAnnotations(AnnotatedElement annotatedElement, Class<A> metaAnnotationType, List<A> annotations) {
+        findDeclaredAnnotations(annotatedElement, annotation -> {
+            Class<? extends Annotation> annotationType = annotation.annotationType();
+            if (isNativeAnnotationType(annotationType)) {
+                return false;
+            }
+            if (annotationType.equals(metaAnnotationType)) {
+                annotations.add((A) annotation);
+                return true;
+            }
+            // Recursively find meta-annotations on the annotation type
+            findMetaAnnotations(annotationType, metaAnnotationType, annotations);
+            return false;
+        });
     }
 
     private AnnotationUtils() {
