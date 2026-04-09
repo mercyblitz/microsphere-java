@@ -1,11 +1,19 @@
-# This workflow syncs every branch that belongs to the current fork project
+# This workflow syncs every branch that belongs to the current project
 # from the upstream repository. It can be triggered manually or runs automatically
 # every 5 minutes.
+#
+# Because this repository is not a GitHub fork, the upstream is specified
+# explicitly via a workflow input (default: microsphere-projects/microsphere-java).
 
 name: Sync Branches from Upstream
 
 on:
   workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 'Upstream repository (owner/repo) to sync from'
+        required: false
+        default: 'microsphere-projects/microsphere-java'
   schedule:
     - cron: '*/5 * * * *'
 
@@ -26,27 +34,20 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Detect upstream repository
-        id: upstream
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          upstream=$(gh repo view "${{ github.repository }}" --json parent --jq '.parent.nameWithOwner // empty')
-          if [ -z "$upstream" ]; then
-            echo "::error::No upstream repository found. '${{ github.repository }}' may not be a fork."
-            exit 1
-          fi
-          echo "repo=$upstream" >> "$GITHUB_OUTPUT"
-          echo "Upstream repository: $upstream"
-
-      - name: Sync fork branches from upstream
+      - name: Sync branches from upstream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          upstream="${{ steps.upstream.outputs.repo }}"
+          # Use the workflow_dispatch input when available, otherwise fall back to the default.
+          upstream="${{ inputs.upstream_repo }}"
+          if [ -z "$upstream" ]; then
+            upstream="microsphere-projects/microsphere-java"
+          fi
+
+          echo "Upstream repository: $upstream"
           git remote add upstream "https://github.com/${upstream}.git"
 
           echo "Fetching all refs from upstream..."
@@ -55,11 +56,11 @@ jobs:
           echo "Fetching all refs from origin..."
           git fetch origin
 
-          # Collect all branches that exist in the fork (origin)
-          fork_branches=$(git branch -r | grep '^  origin/' | grep -v '^  origin/HEAD' | sed 's|^  origin/||')
+          # Collect all branches that exist in this project (origin), excluding HEAD pointer.
+          origin_branches=$(git branch -r | grep '^  origin/' | grep -v '^  origin/HEAD' | sed 's|^  origin/||')
 
-          if [ -z "$fork_branches" ]; then
-            echo "No branches found in the fork. Nothing to sync."
+          if [ -z "$origin_branches" ]; then
+            echo "No branches found in the repository. Nothing to sync."
             exit 0
           fi
 
@@ -67,9 +68,9 @@ jobs:
           skipped=0
           failed=0
 
-          for branch in $fork_branches; do
+          for branch in $origin_branches; do
             echo "---"
-            # Check whether upstream has a matching branch
+            # Only sync branches that also exist in upstream.
             if ! git ls-remote --exit-code upstream "refs/heads/${branch}" > /dev/null 2>&1; then
               echo "Branch '${branch}' does not exist in upstream – skipping."
               skipped=$((skipped + 1))
@@ -79,7 +80,7 @@ jobs:
             echo "Syncing branch '${branch}' from upstream..."
             git checkout -B "$branch" "origin/${branch}"
 
-            # Reset the fork branch to exactly match upstream
+            # Reset the local branch to exactly match upstream.
             if git reset --hard "upstream/${branch}"; then
               if git push origin "${branch}" --force-with-lease; then
                 echo "Branch '${branch}' synced successfully."
