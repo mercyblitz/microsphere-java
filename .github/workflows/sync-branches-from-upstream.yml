@@ -1,0 +1,101 @@
+# This workflow syncs every branch that belongs to the current fork project
+# from the upstream repository. It can be triggered manually or runs automatically
+# every 5 minutes.
+
+name: Sync Branches from Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+concurrency:
+  group: sync-branches-from-upstream
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync branches from upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect upstream repository
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          upstream=$(gh repo view "${{ github.repository }}" --json parent --jq '.parent.nameWithOwner // empty')
+          if [ -z "$upstream" ]; then
+            echo "::error::No upstream repository found. '${{ github.repository }}' may not be a fork."
+            exit 1
+          fi
+          echo "repo=$upstream" >> "$GITHUB_OUTPUT"
+          echo "Upstream repository: $upstream"
+
+      - name: Sync fork branches from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          upstream="${{ steps.upstream.outputs.repo }}"
+          git remote add upstream "https://github.com/${upstream}.git"
+
+          echo "Fetching all refs from upstream..."
+          git fetch upstream
+
+          echo "Fetching all refs from origin..."
+          git fetch origin
+
+          # Collect all branches that exist in the fork (origin)
+          fork_branches=$(git branch -r | grep '^  origin/' | grep -v '^  origin/HEAD' | sed 's|^  origin/||')
+
+          if [ -z "$fork_branches" ]; then
+            echo "No branches found in the fork. Nothing to sync."
+            exit 0
+          fi
+
+          synced=0
+          skipped=0
+          failed=0
+
+          for branch in $fork_branches; do
+            echo "---"
+            # Check whether upstream has a matching branch
+            if ! git ls-remote --exit-code upstream "refs/heads/${branch}" > /dev/null 2>&1; then
+              echo "Branch '${branch}' does not exist in upstream – skipping."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            echo "Syncing branch '${branch}' from upstream..."
+            git checkout -B "$branch" "origin/${branch}"
+
+            # Reset the fork branch to exactly match upstream
+            if git reset --hard "upstream/${branch}"; then
+              if git push origin "${branch}" --force-with-lease; then
+                echo "Branch '${branch}' synced successfully."
+                synced=$((synced + 1))
+              else
+                echo "::warning::Failed to push branch '${branch}'."
+                failed=$((failed + 1))
+              fi
+            else
+              echo "::warning::Failed to reset branch '${branch}' to upstream."
+              failed=$((failed + 1))
+            fi
+          done
+
+          echo "==="
+          echo "Sync complete: synced=${synced}, skipped=${skipped}, failed=${failed}"
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
