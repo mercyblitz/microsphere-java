@@ -23,8 +23,7 @@ jobs:
   sync:
     name: Sync branches from upstream
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    permissions: write-all
     steps:
       - name: Check if this repository is a fork
         id: fork_check
