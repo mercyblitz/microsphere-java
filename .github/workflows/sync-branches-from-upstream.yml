@@ -93,30 +93,21 @@ jobs:
               continue
             fi
 
-            echo "Syncing branch '${branch}' from upstream..."
-            git checkout -B "$branch" "origin/${branch}"
-
-            # Reset the local branch to exactly match upstream.
-            if git reset --hard "upstream/${branch}"; then
-          
-              # Prevent updating workflow files (avoids needing workflows permission)
-              git restore --source="origin/${branch}" -- .github/workflows || true
-          
-              if git diff --quiet; then
-                echo "No changes to push for '${branch}' (after excluding workflows)."
-                skipped=$((skipped + 1))
+            # If the origin and upstream branches point to the same commit, skip.
+            origin_sha=$(git rev-parse "origin/${branch}")
+            upstream_sha=$(git rev-parse "upstream/${branch}")
+            if [ "$origin_sha" = "$upstream_sha" ]; then
+              echo "Branch '${branch}' is already up to date."
+              skipped=$((skipped + 1))
               continue
-              fi
-          
-              if git push origin "${branch}" --force-with-lease; then
-                echo "Branch '${branch}' synced successfully."
-                synced=$((synced + 1))
-              else
-                echo "::warning::Failed to push branch '${branch}'."
-                failed=$((failed + 1))
-              fi
+            fi
+
+            echo "Syncing branch '${branch}' from upstream..."
+            if git push origin "upstream/${branch}:refs/heads/${branch}" --force-with-lease; then
+              echo "Branch '${branch}' synced successfully."
+              synced=$((synced + 1))
             else
-              echo "::warning::Failed to reset branch '${branch}' to upstream."
+              echo "::warning::Failed to push branch '${branch}'."
               failed=$((failed + 1))
             fi
           done
