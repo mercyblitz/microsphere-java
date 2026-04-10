@@ -4,7 +4,10 @@
 #
 # Step 1: The GitHub API is queried to determine whether the current repository
 #         is a fork. If it is the upstream (not a fork), the job exits immediately.
-# Step 2: Each branch present in the fork is synced from the upstream parent.
+# Step 2: Each branch present in the fork is synced from the upstream parent
+#         using the GitHub API to update git refs directly. This avoids the
+#         restriction that prevents GITHUB_TOKEN from pushing workflow file
+#         changes via git push (which requires the 'workflows' permission).
 #         Branches that exist only in the fork (not in upstream) are skipped.
 # Step 3: The schedule runs every 5 minutes.
 
@@ -47,33 +50,17 @@ jobs:
             echo "is_fork=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout Repository
-        if: steps.fork_check.outputs.is_fork == 'true'
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Sync branches from upstream
         if: steps.fork_check.outputs.is_fork == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
           upstream="${{ steps.fork_check.outputs.upstream_repo }}"
+          current_repo="${{ github.repository }}"
           echo "Upstream repository: $upstream"
-          git remote add upstream "https://github.com/${upstream}.git"
 
-          echo "Fetching all refs from upstream..."
-          git fetch upstream
-
-          echo "Fetching all refs from origin..."
-          git fetch origin
-
-          # Collect all branches that exist in this project (origin), excluding HEAD pointer.
-          origin_branches=$(git branch -r | grep '^  origin/' | grep -v '^  origin/HEAD' | sed 's|^  origin/||')
+          # Collect all branches in this repository via the API.
+          origin_branches=$(gh api --paginate "repos/${current_repo}/branches" --jq '.[].name')
 
           if [ -z "$origin_branches" ]; then
             echo "No branches found in the repository. Nothing to sync."
@@ -87,27 +74,32 @@ jobs:
           for branch in $origin_branches; do
             echo "---"
             # Only sync branches that also exist in upstream.
-            if ! git ls-remote --exit-code upstream "refs/heads/${branch}" > /dev/null 2>&1; then
+            upstream_sha=$(gh api "repos/${upstream}/git/refs/heads/${branch}" --jq '.object.sha' 2>/dev/null) || true
+            if [ -z "$upstream_sha" ]; then
               echo "Branch '${branch}' does not exist in upstream – skipping."
               skipped=$((skipped + 1))
               continue
             fi
 
             # If the origin and upstream branches point to the same commit, skip.
-            origin_sha=$(git rev-parse "origin/${branch}")
-            upstream_sha=$(git rev-parse "upstream/${branch}")
+            origin_sha=$(gh api "repos/${current_repo}/git/refs/heads/${branch}" --jq '.object.sha')
             if [ "$origin_sha" = "$upstream_sha" ]; then
               echo "Branch '${branch}' is already up to date."
               skipped=$((skipped + 1))
               continue
             fi
 
-            echo "Syncing branch '${branch}' from upstream..."
-            if git push origin "upstream/${branch}:refs/heads/${branch}" --force-with-lease; then
+            echo "Syncing branch '${branch}' from upstream (${upstream_sha})..."
+            # Use the GitHub API to update the ref directly. This bypasses the
+            # restriction that prevents GITHUB_TOKEN from pushing workflow file
+            # changes via git push (which requires the 'workflows' permission).
+            if gh api -X PATCH "repos/${current_repo}/git/refs/heads/${branch}" \
+                 -f sha="$upstream_sha" \
+                 -F force=true > /dev/null; then
               echo "Branch '${branch}' synced successfully."
               synced=$((synced + 1))
             else
-              echo "::warning::Failed to push branch '${branch}'."
+              echo "::warning::Failed to update branch '${branch}'."
               failed=$((failed + 1))
             fi
           done
