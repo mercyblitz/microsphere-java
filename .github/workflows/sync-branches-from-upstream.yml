@@ -23,7 +23,8 @@ jobs:
   sync:
     name: Sync branches from upstream
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      contents: write
     steps:
       - name: Check if this repository is a fork
         id: fork_check
@@ -97,6 +98,16 @@ jobs:
 
             # Reset the local branch to exactly match upstream.
             if git reset --hard "upstream/${branch}"; then
+          
+              # Prevent updating workflow files (avoids needing workflows permission)
+              git restore --source="origin/${branch}" -- .github/workflows || true
+          
+              if git diff --quiet; then
+                echo "No changes to push for '${branch}' (after excluding workflows)."
+                skipped=$((skipped + 1))
+              continue
+              fi
+          
               if git push origin "${branch}" --force-with-lease; then
                 echo "Branch '${branch}' synced successfully."
                 synced=$((synced + 1))
