@@ -9,14 +9,15 @@ import io.microsphere.logging.Logger;
 import java.net.URL;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 
-import static io.microsphere.collection.CollectionUtils.isEmpty;
+import static io.microsphere.collection.CollectionUtils.size;
+import static io.microsphere.collection.ListUtils.newArrayList;
 import static io.microsphere.logging.LoggerFactory.getLogger;
 import static io.microsphere.util.ClassLoaderUtils.findAllClassPathURLs;
 import static io.microsphere.util.ClassLoaderUtils.getClassLoader;
+import static io.microsphere.util.ClassLoaderUtils.getClassResource;
 import static io.microsphere.util.ClassPathUtils.getBootstrapClassPaths;
 import static io.microsphere.util.ServiceLoaderUtils.loadServicesList;
 import static io.microsphere.util.SystemUtils.JAVA_HOME;
@@ -48,9 +49,9 @@ import static java.util.Collections.unmodifiableList;
  *
  * <pre>{@code
  * public class CustomArtifactResolver implements ArtifactResourceResolver {
- *     public Artifact resolve(URL resourceURL) {
- *         if (resourceURL.getProtocol().equals("file")) {
- *             return new FileArtifact(resourceURL); // hypothetical custom artifact
+ *     public Artifact resolve(URL classPathURL) {
+ *         if (classPathURL.getProtocol().equals("file")) {
+ *             return new FileArtifact(classPathURL); // hypothetical custom artifact
  *         }
  *         return null;
  *     }
@@ -108,24 +109,40 @@ public class ArtifactDetector {
 
     @Nonnull
     @Immutable
-    protected List<Artifact> detect(Set<URL> classPathURLs) {
-        if (isEmpty(classPathURLs)) {
+    public List<Artifact> detect(@Nullable Set<URL> classPathURLs) {
+        int size = size(classPathURLs);
+        if (size < 1) {
             return emptyList();
         }
-
-        List<Artifact> artifactList = new LinkedList<>();
-        for (URL resourceURL : classPathURLs) {
-            for (ArtifactResourceResolver artifactResourceResolver : artifactResourceResolvers) {
-                Artifact artifact = artifactResourceResolver.resolve(resourceURL);
-                if (artifact != null) {
-                    artifactList.add(artifact);
-                    break;
-                }
+        List<Artifact> artifactList = newArrayList(size);
+        for (URL classPathURL : classPathURLs) {
+            Artifact artifact = detect(classPathURL);
+            if (artifact != null) {
+                artifactList.add(artifact);
+                break;
             }
         }
-
         return unmodifiableList(artifactList);
     }
+
+    @Nullable
+    public Artifact detect(@Nonnull Class<?> classInResource) {
+        URL classResource = getClassResource(classInResource);
+        return detect(classResource);
+    }
+
+    @Nullable
+    public Artifact detect(@Nonnull URL classPathURL) {
+        Artifact artifact = null;
+        for (ArtifactResourceResolver artifactResourceResolver : artifactResourceResolvers) {
+            artifact = artifactResourceResolver.resolve(classPathURL);
+            if (artifact != null) {
+                break;
+            }
+        }
+        return artifact;
+    }
+
 
     protected Set<URL> getClassPathURLs(boolean includedJdkLibraries) {
         Set<URL> urls = findAllClassPathURLs(classLoader);
